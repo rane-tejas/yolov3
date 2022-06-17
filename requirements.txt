@@ -34,3 +34,10 @@ seaborn>=0.11.0
 # pycocotools>=2.0  # COCO mAP
 # roboflow
 thop  # FLOPs computation
+
+## RAGHAVV ADDITIONAL DOWNLOADS on top of dreamer_pytorch docker container
+pandas
+seaborn
+wandb
+BeautifulSoup4
+lxml

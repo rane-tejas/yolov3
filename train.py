@@ -1,9 +1,12 @@
-# YOLOv3 🚀 by Ultralytics, GPL-3.0 license
+# YOLOv3 by Ultralytics, GPL-3.0 license
 """
 Train a  model on a custom dataset
 
 Usage:
-    $ python path/to/train.py --data coco128.yaml --weights yolov3.pt --img 640
+    ## using pretrained weights
+    $ python path/to/train.py --data coco128.yaml --weights yolov3-tiny.pt --img 640 --epoch 50
+    ## w/o using pretrained weighs
+    $ python path/to/train.py --data coco128.yaml --weights '' --cfg yolov3-tiny --img 640 --epoch 50
 """
 import argparse
 import math
@@ -50,6 +53,8 @@ from utils.metrics import fitness
 from utils.plots import plot_evolve, plot_labels
 from utils.torch_utils import EarlyStopping, ModelEMA, de_parallel, select_device, torch_distributed_zero_first
 
+import ipdb
+
 LOCAL_RANK = int(os.getenv('LOCAL_RANK', -1))  # https://pytorch.org/docs/stable/elastic/run.html
 RANK = int(os.getenv('RANK', -1))
 WORLD_SIZE = int(os.getenv('WORLD_SIZE', 1))
@@ -64,6 +69,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         Path(opt.save_dir), opt.epochs, opt.batch_size, opt.weights, opt.single_cls, opt.evolve, opt.data, opt.cfg, \
         opt.resume, opt.noval, opt.nosave, opt.workers, opt.freeze
 
+    # added by raghavv 
+    augment = opt.augment
     # Directories
     w = save_dir / 'weights'  # weights dir
     (w.parent if evolve else w).mkdir(parents=True, exist_ok=True)  # make dir
@@ -73,7 +80,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     if isinstance(hyp, str):
         with open(hyp, errors='ignore') as f:
             hyp = yaml.safe_load(f)  # load hyps dict
-    LOGGER.info(colorstr('hyperparameters: ') + ', '.join(f'{k}={v}' for k, v in hyp.items()))
+    LOGGER.info(colorstr('hyperparameters: ') + ', '.join('{}={}'.format(k,v) for k, v in hyp.items()))
 
     # Save run settings
     with open(save_dir / 'hyp.yaml', 'w') as f:
@@ -103,7 +110,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     train_path, val_path = data_dict['train'], data_dict['val']
     nc = 1 if single_cls else int(data_dict['nc'])  # number of classes
     names = ['item'] if single_cls and len(data_dict['names']) != 1 else data_dict['names']  # class names
-    assert len(names) == nc, f'{len(names)} names found for nc={nc} dataset in {data}'  # check
+    # assert len(names) == nc, f'{len(names)} names found for nc={nc} dataset in {data}'  # check
+    assert len(names) == nc, '{len({})} names found for nc={} dataset in {}'.format(names,nc,data)  # check
     is_coco = isinstance(val_path, str) and val_path.endswith('coco/val2017.txt')  # COCO dataset
 
     # Model
@@ -118,16 +126,17 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         csd = ckpt['model'].float().state_dict()  # checkpoint state_dict as FP32
         csd = intersect_dicts(csd, model.state_dict(), exclude=exclude)  # intersect
         model.load_state_dict(csd, strict=False)  # load
-        LOGGER.info(f'Transferred {len(csd)}/{len(model.state_dict())} items from {weights}')  # report
+        # LOGGER.info(f'Transferred {len(csd)}/{len(model.state_dict())} items from {weights}')  # report
+        LOGGER.info('Transferred len({})/{} items from {}'.format(csd,len(model.state_dict()),weights))  # report
     else:
         model = Model(cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
 
     # Freeze
-    freeze = [f'model.{x}.' for x in range(freeze)]  # layers to freeze
+    freeze = ['model.{}.'.format(x) for x in range(freeze)]  # layers to freeze
     for k, v in model.named_parameters():
         v.requires_grad = True  # train all layers
         if any(x in k for x in freeze):
-            LOGGER.info(f'freezing {k}')
+            LOGGER.info('freezing {}'.format(k))
             v.requires_grad = False
 
     # Image size
@@ -142,7 +151,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     nbs = 64  # nominal batch size
     accumulate = max(round(nbs / batch_size), 1)  # accumulate loss before optimizing
     hyp['weight_decay'] *= batch_size * accumulate / nbs  # scale weight_decay
-    LOGGER.info(f"Scaled weight_decay = {hyp['weight_decay']}")
+    # LOGGER.info(f"Scaled weight_decay = {hyp['weight_decay']}")
+    LOGGER.info("Scaled weight_decay = {}".format(hyp['weight_decay']))
 
     g0, g1, g2 = [], [], []  # optimizer parameter groups
     for v in model.modules():
@@ -160,8 +170,11 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
     optimizer.add_param_group({'params': g1, 'weight_decay': hyp['weight_decay']})  # add g1 with weight_decay
     optimizer.add_param_group({'params': g2})  # add g2 (biases)
-    LOGGER.info(f"{colorstr('optimizer:')} {type(optimizer).__name__} with parameter groups "
-                f"{len(g0)} weight, {len(g1)} weight (no decay), {len(g2)} bias")
+    # LOGGER.info(f"{colorstr('optimizer:')} {type(optimizer).__name__} with parameter groups "
+    #             f"{len(g0)} weight, {len(g1)} weight (no decay), {len(g2)} bias")
+    LOGGER.info("{} {} with parameter groups {} weight, \
+                {} weight (no decay), {} bias".format(colorstr('optimizer:'), type(optimizer).__name__,len(g0), len(g1), len(g2)))                
+    
     del g0, g1, g2
 
     # Scheduler
@@ -190,9 +203,9 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         # Epochs
         start_epoch = ckpt['epoch'] + 1
         if resume:
-            assert start_epoch > 0, f'{weights} training to {epochs} epochs is finished, nothing to resume.'
+            assert start_epoch > 0, '{} training to {} epochs is finished, nothing to resume.'.format(weights, epoch)
         if epochs < start_epoch:
-            LOGGER.info(f"{weights} has been trained for {ckpt['epoch']} epochs. Fine-tuning for {epochs} more epochs.")
+            LOGGER.info("{} has been trained for {} epochs. Fine-tuning for {} more epochs.".format(weights, ckpt['epoch']), epochs)
             epochs += ckpt['epoch']  # finetune additional epochs
 
         del ckpt, csd
@@ -210,12 +223,13 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
     # Trainloader
     train_loader, dataset = create_dataloader(train_path, imgsz, batch_size // WORLD_SIZE, gs, single_cls,
-                                              hyp=hyp, augment=True, cache=opt.cache, rect=opt.rect, rank=LOCAL_RANK,
+                                              hyp=hyp, augment=augment, cache=opt.cache, rect=opt.rect, rank=LOCAL_RANK,
                                               workers=workers, image_weights=opt.image_weights, quad=opt.quad,
                                               prefix=colorstr('train: '), shuffle=True)
     mlc = int(np.concatenate(dataset.labels, 0)[:, 0].max())  # max label class
     nb = len(train_loader)  # number of batches
-    assert mlc < nc, f'Label class {mlc} exceeds nc={nc} in {data}. Possible class labels are 0-{nc - 1}'
+    # assert mlc < nc, f'Label class {mlc} exceeds nc={nc} in {data}. Possible class labels are 0-{nc - 1}'
+    assert mlc < nc, 'Label class {} exceeds nc={} in {}. Possible class labels are 0-{nc - 1}'.format(mlc, nc, data)
 
     # Process 0
     if RANK in [-1, 0]:
@@ -239,7 +253,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
 
         callbacks.run('on_pretrain_routine_end')
 
-    # DDP mode
+    # DDP mode | is this distributed training? 
     if cuda and RANK != -1:
         model = DDP(model, device_ids=[LOCAL_RANK], output_device=LOCAL_RANK)
 
@@ -265,10 +279,17 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
     scaler = amp.GradScaler(enabled=cuda)
     stopper = EarlyStopping(patience=opt.patience)
     compute_loss = ComputeLoss(model)  # init loss class
-    LOGGER.info(f'Image sizes {imgsz} train, {imgsz} val\n'
-                f'Using {train_loader.num_workers * WORLD_SIZE} dataloader workers\n'
-                f"Logging results to {colorstr('bold', save_dir)}\n"
-                f'Starting training for {epochs} epochs...')
+    # LOGGER.info(f'Image sizes {imgsz} train, {imgsz} val\n'
+    #             f'Using {train_loader.num_workers * WORLD_SIZE} dataloader workers\n'
+    #             f"Logging results to {colorstr('bold', save_dir)}\n"
+    #             f'Starting training for {epochs} epochs...')
+    LOGGER.info('Image sizes {} train, {} val\n'.format(imgsz, imgsz))
+    LOGGER.info('Using {} dataloader workers\n'.format(train_loader.num_workers * WORLD_SIZE))
+    LOGGER.info("Logging results to {}\n".format(colorstr('bold', save_dir)))
+    # ipdb.set_trace()
+    # LOGGER.info('Starting training for {} epochs...'.format(epochs))                
+    print('Starting training for', epochs , ' epochs...')                
+                
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
 
@@ -287,6 +308,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             train_loader.sampler.set_epoch(epoch)
         pbar = enumerate(train_loader)
         LOGGER.info(('\n' + '%10s' * 7) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'labels', 'img_size'))
+        # LOGGER.info(('\n' {}, {}, {}, {}, {}, {}, {}) % (Epoch, gpu_mem, 'box', 'obj', 'cls', 'labels', 'img_size'))
         if RANK in [-1, 0]:
             pbar = tqdm(pbar, total=nb, ncols=NCOLS, bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}')  # progress bar
         optimizer.zero_grad()
@@ -294,7 +316,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
 
-            # Warmup
+            # Warmup | WHY IS THIS BEING DONE ? 
             if ni <= nw:
                 xi = [0, nw]  # x interp
                 # compute_loss.gr = np.interp(ni, xi, [0.0, 1.0])  # iou loss ratio (obj_loss = 1.0 or iou)
@@ -305,7 +327,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                     if 'momentum' in x:
                         x['momentum'] = np.interp(ni, xi, [hyp['warmup_momentum'], hyp['momentum']])
 
-            # Multi-scale
+            # Multi-scale | WHY 
             if opt.multi_scale:
                 sz = random.randrange(imgsz * 0.5, imgsz * 1.5 + gs) // gs * gs  # size
                 sf = sz / max(imgs.shape[2:])  # scale factor
@@ -337,9 +359,11 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
             # Log
             if RANK in [-1, 0]:
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
-                mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
-                pbar.set_description(('%10s' * 2 + '%10.4g' * 5) % (
-                    f'{epoch}/{epochs - 1}', mem, *mloss, targets.shape[0], imgs.shape[-1]))
+                mem_tmp = torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0
+                # mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
+                mem = '{}G'.format(mem_tmp)  # (GB)
+                print("mloss = ", mloss)
+                pbar.set_description('{}/{}, mem = {}, target_shape ={}, img_shape ={}'.format(epoch, epochs-1, mem, targets.shape[0], imgs.shape[-1]))
                 callbacks.run('on_train_batch_end', ni, model, imgs, targets, paths, plots, opt.sync_bn)
             # end batch ------------------------------------------------------------------------------------------------
 
@@ -387,7 +411,7 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                 if best_fitness == fi:
                     torch.save(ckpt, best)
                 if (epoch > 0) and (opt.save_period > 0) and (epoch % opt.save_period == 0):
-                    torch.save(ckpt, w / f'epoch{epoch}.pt')
+                    torch.save(ckpt, w / 'epoch{}.pt'.format(epoch))
                 del ckpt
                 callbacks.run('on_model_save', last, epoch, final_epoch, best_fitness, fi)
 
@@ -408,12 +432,13 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
         # end epoch ----------------------------------------------------------------------------------------------------
     # end training -----------------------------------------------------------------------------------------------------
     if RANK in [-1, 0]:
-        LOGGER.info(f'\n{epoch - start_epoch + 1} epochs completed in {(time.time() - t0) / 3600:.3f} hours.')
+        # LOGGER.info(f'\n{epoch - start_epoch + 1} epochs completed in {(time.time() - t0) / 3600:.3f} hours.')
+        LOGGER.info('\n{} epochs completed in {:.3f} hours.'.format(epoch - start_epoch + 1, (time.time() - t0) / 3600))
         for f in last, best:
             if f.exists():
                 strip_optimizer(f)  # strip optimizers
                 if f is best:
-                    LOGGER.info(f'\nValidating {f}...')
+                    LOGGER.info('\nValidating {}...'.format(f))
                     results, _, _ = val.run(data_dict,
                                             batch_size=batch_size // WORLD_SIZE * 2,
                                             imgsz=imgsz,
@@ -431,7 +456,8 @@ def train(hyp,  # path/to/hyp.yaml or hyp dictionary
                         callbacks.run('on_fit_epoch_end', list(mloss) + list(results) + lr, epoch, best_fitness, fi)
 
         callbacks.run('on_train_end', last, best, plots, epoch, results)
-        LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}")
+        # LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}")
+        LOGGER.info("Results saved to {}".format(colorstr('bold', save_dir)))
 
     torch.cuda.empty_cache()
     return results
@@ -472,6 +498,9 @@ def parse_opt(known=False):
     parser.add_argument('--save-period', type=int, default=-1, help='Save checkpoint every x epochs (disabled if < 1)')
     parser.add_argument('--local_rank', type=int, default=-1, help='DDP parameter, do not modify')
 
+    # ADDED BY RAGHAVV
+    parser.add_argument('--augment', action='store_true', help='data augmentation needed or not')
+
     # Weights & Biases arguments
     parser.add_argument('--entity', default=None, help='W&B: Entity')
     parser.add_argument('--upload_dataset', action='store_true', help='W&B: Upload dataset as artifact table')
@@ -496,7 +525,7 @@ def main(opt, callbacks=Callbacks()):
         with open(Path(ckpt).parent.parent / 'opt.yaml', errors='ignore') as f:
             opt = argparse.Namespace(**yaml.safe_load(f))  # replace
         opt.cfg, opt.weights, opt.resume = '', ckpt, True  # reinstate
-        LOGGER.info(f'Resuming training from {ckpt}')
+        LOGGER.info('Resuming training from {}'.format(ckpt))
     else:
         opt.data, opt.cfg, opt.hyp, opt.weights, opt.project = \
             check_file(opt.data), check_yaml(opt.cfg), check_yaml(opt.hyp), str(opt.weights), str(opt.project)  # checks
@@ -565,7 +594,8 @@ def main(opt, callbacks=Callbacks()):
         # ei = [isinstance(x, (int, float)) for x in hyp.values()]  # evolvable indices
         evolve_yaml, evolve_csv = save_dir / 'hyp_evolve.yaml', save_dir / 'evolve.csv'
         if opt.bucket:
-            os.system(f'gsutil cp gs://{opt.bucket}/evolve.csv {save_dir}')  # download evolve.csv if exists
+            # os.system(f'gsutil cp gs://{opt.bucket}/evolve.csv {save_dir}')  # download evolve.csv if exists
+            os.system('gsutil cp gs://{}/evolve.csv {}'.format(opt.bucket, save_dir))  # download evolve.csv if exists
 
         for _ in range(opt.evolve):  # generations to evolve
             if evolve_csv.exists():  # if evolve.csv exists: select best hyps and mutate
@@ -607,9 +637,9 @@ def main(opt, callbacks=Callbacks()):
 
         # Plot results
         plot_evolve(evolve_csv)
-        LOGGER.info(f'Hyperparameter evolution finished\n'
-                    f"Results saved to {colorstr('bold', save_dir)}\n"
-                    f'Use best hyperparameters example: $ python train.py --hyp {evolve_yaml}')
+        LOGGER.info('Hyperparameter evolution finished\n',
+                    "Results saved to {}\n".format(colorstr('bold', save_dir)),
+                    'Use best hyperparameters example: $ python train.py --hyp {}'.format(evolve_yaml))
 
 
 def run(**kwargs):
