@@ -1,10 +1,14 @@
 # from __future__ import annotations
 from pickletools import uint8
 import numpy as np
-from bs4 import BeautifulSoup
+# from bs4 import BeautifulSoup
 import cv2
 import ipdb
 import os
+import distutils
+
+from natsort import natsorted
+
 # crop_image_x:
 # - 0 #293
 # - 258 #803
@@ -224,20 +228,57 @@ def read_images_masks_save_boxes(CVAT_folder, list_CVAT_folders, save_folder):
 
             cnt += 1
 
+def read_images_masks_save_boxes():
+    PIG_TRAIN = '/home/tejasr/projects/tracir_segmentation/data/pig_dataset_fukuda/train/'
+    PIG_VALID = '/home/tejasr/projects/tracir_segmentation/data/pig_dataset_fukuda/valid/'
+    PIG_TEST = '/home/tejasr/projects/tracir_segmentation/data/pig_dataset_fukuda/test/'
+    YOLO_TRAIN = '/home/tejasr/projects/tracir_segmentation/data/yolo_dataset/train/'
+    YOLO_VALID = '/home/tejasr/projects/tracir_segmentation/data/yolo_dataset/valid/'
+    YOLO_TEST = '/home/tejasr/projects/tracir_segmentation/data/yolo_dataset/test/'
+    PIG_SET = [PIG_TRAIN, PIG_VALID, PIG_TEST]
+    YOLO_SET = [YOLO_TRAIN, YOLO_VALID, YOLO_TEST]
+
+    for src, dst in zip(PIG_SET, YOLO_SET):
+        distutils.dir_util.copy_tree(src+'images/', dst+'images/')
+        labels = natsorted(os.listdir(src+'labels/'))
+        for i, name in enumerate(labels):
+            image_path = src+'images/'+name
+            image = cv2.imread(image_path)
+            label_path = src+'labels/'+name
+            label = cv2.imread(label_path, 0)
+            contour_points, _ = cv2.findContours(label, 1, 2)
+            boxes = []
+            size_ = np.shape(image)
+            H, W = size_[1], size_[0]
+            for contours in contour_points:
+                max_pt = np.max(contours[:,0,:], axis=0)
+                min_pt = np.min(contours[:,0,:], axis=0)
+                box_ = [min_pt, max_pt]
+                image_bb = cv2.rectangle(image, (min_pt[0], min_pt[1]), (max_pt[0], max_pt[1]), (255,0,0), 1)
+                boxes.append(box_)
+            cv2.imwrite(os.path.join(dst+'images_bb', name.split('.')[0]+'.png'), image_bb)
+            label_path = os.path.join(dst+'labels', name.split('.')[0]+'.txt')
+            with open(label_path,'w') as f:
+                for box_ in boxes:
+                    box_size = box_[1] - box_[0]
+                    box_centre = box_[0] + box_size/2
+                    f.write('{} {:4f} {:4f} {:4f} {:4f} \n'.format(0, box_centre[0]/W, box_centre[1]/H, box_size[0]/W, box_size[1]/H))
+
 if __name__ == "__main__":
 
-    # replace below with your video_name and annotation file name
-    video_name = '2022-05-19--20-30-34-pig_lab-Trial-5.mp4'
-    annotations_file_name = 'annotations.xml'
+    read_images_masks_save_boxes()
 
-    bounding_boxes, frame_numbers = read_xml('annotations.xml')
-    # ipdb.set_trace()
-    frames = read_video_save_image_with_label(video_name, frame_numbers,bounding_boxes)
-    # read video to frames | crop it | save frame using their index +.png
+    # # replace below with your video_name and annotation file name
+    # video_name = '2022-05-19--20-30-34-pig_lab-Trial-5.mp4'
+    # annotations_file_name = 'annotations.xml'
 
-    # read xml file and create .txt files for given frames 
-    # we'll need to adjust the crop as well 
+    # bounding_boxes, frame_numbers = read_xml('annotations.xml')
+    # # ipdb.set_trace()
+    # frames = read_video_save_image_with_label(video_name, frame_numbers,bounding_boxes)
+    # # read video to frames | crop it | save frame using their index +.png
 
-    # create bounding boxes using the .txt files to verify 
+    # # read xml file and create .txt files for given frames 
+    # # we'll need to adjust the crop as well 
+
+    # # create bounding boxes using the .txt files to verify 
     
-

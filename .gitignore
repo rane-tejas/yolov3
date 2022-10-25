@@ -25,6 +25,7 @@
 
 storage.googleapis.com
 runs/*
+runs_old/*
 data/*
 !data/hyps/*
 !data/images/zidane.jpg
@@ -37,6 +38,7 @@ results*.csv
 coco/
 coco128/
 VOC/
+dataset/
 
 # MATLAB GitIgnore -----------------------------------------------------------------------------------------------------
 *.m~
