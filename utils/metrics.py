@@ -3,6 +3,7 @@
 Model validation metrics
 """
 
+import cv2
 import math
 import warnings
 from pathlib import Path
@@ -10,6 +11,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from scipy.spatial import distance
 
 
 def fitness(x):
@@ -289,6 +291,107 @@ def wh_iou(wh1, wh2):
     wh2 = wh2[None]  # [1,M,2]
     inter = torch.min(wh1, wh2).prod(2)  # [N,M]
     return inter / (wh1.prod(2) + wh2.prod(2) - inter)  # iou = inter / (area1 + area2 - inter)
+
+# Segmentation metrics -------------------------------------------------------------------------------------------------
+# The other, above-defined metrics are detection metrics
+# All constant values taken from smp.utils.metrics
+
+def _take_channels(*xs, ignore_channels=[0]):
+    if ignore_channels is None:
+        return xs
+    else:
+        channels = [channel for channel in range(xs[0].shape[0]) if channel not in ignore_channels]
+        xs = [np.take(x, indices=channels, axis=0) for x in xs]
+        return xs
+
+
+def _threshold(x, threshold=0.5):
+    if threshold is not None:
+        return (x > threshold).astype(np.uint8)
+    else:
+        return x
+
+
+def _get_single_class(pr, gt):
+    pr_sum = np.sum(pr, axis=0)
+    gt_sum = np.sum(gt, axis=0)
+    return pr_sum, gt_sum
+
+
+def box_iou_score(pr_labels, gt_labels, single_class=False):
+    pr = np.zeros((256, 256, 3))
+    gt = np.zeros((256, 256, 3))
+
+    for i, ch in enumerate(pr_labels):
+        if not ch: continue
+        color = [0, 0, 0]
+        color[i] = 255
+        for label in ch:
+            [x1, y1, x2, y2] = label
+            pr = cv2.rectangle(pr, (x1, y1), (x2, y2), color=tuple(color), thickness=-1)
+
+    for i, ch in enumerate(gt_labels):
+        if not ch: continue
+        color = [0, 0, 0]
+        color[i] = 255
+        for label in ch:
+            [x1, y1, x2, y2] = label
+            gt = cv2.rectangle(gt, (x1, y1), (x2, y2), color=tuple(color), thickness=-1)
+
+    score = iou_score(pr, gt, single_class=single_class)
+    return score
+
+
+def iou_score(pr, gt, single_class=False):
+    eps = 1e-7 # epsilon to avoid division by zero
+    if single_class: pr, gt = _get_single_class(pr, gt)
+    pr, gt = _take_channels(pr, gt)
+    pr = _threshold(pr/255.0)
+    gt = _threshold(gt/255.0)
+    intersection = np.sum(gt * pr, axis=None) + eps
+    union = np.sum(gt, axis=None) + np.sum(pr, axis=None) - intersection + eps
+    score = intersection / union
+    return score
+
+
+def dice_score(gt, pr, single_class=False):
+    eps = 1e-7 # epsilon to avoid division by zero
+    beta = 1 # Positive constant
+    if single_class: pr, gt = _get_single_class(pr, gt)
+    pr, gt = _take_channels(pr, gt)
+    pr = _threshold(pr/255.0)
+    gt = _threshold(gt/255.0)
+    tp = np.sum(gt * pr, axis=None)
+    fp = np.sum(pr, axis=None) - tp
+    fn = np.sum(gt, axis=None) - tp
+    score = ((1 + beta**2) * tp + eps) / ((1 + beta**2) * tp + beta**2 * fn + fp + eps)
+    return score
+
+
+def euclidean_distance(pr, gt, eps=1e-7, threshold=None, ignore_channels=None, single_class=False):
+    pr = _threshold(pr, threshold=threshold)
+    if single_class: pr, gt = _get_single_class(pr, gt)
+    pr, gt = _take_channels(pr, gt, ignore_channels=ignore_channels)
+
+    pr_f = torch.flatten(pr).cpu().detach().numpy()
+    gt_f = torch.flatten(gt).cpu().detach().numpy()
+
+    dist = distance.euclidean(gt_f, pr_f)
+
+    return dist
+
+
+def hamming_distance(pr, gt, eps=1e-7, threshold=None, ignore_channels=None, single_class=False):
+    pr = _threshold(pr, threshold=threshold)
+    if single_class: pr, gt = _get_single_class(pr, gt)
+    pr, gt = _take_channels(pr, gt, ignore_channels=ignore_channels)
+
+    pr_f = torch.flatten(pr).cpu().detach().numpy()
+    gt_f = torch.flatten(gt).cpu().detach().numpy()
+
+    dist = distance.euclidean(gt_f, pr_f)
+
+    return dist
 
 
 # Plots ----------------------------------------------------------------------------------------------------------------

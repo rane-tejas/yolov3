@@ -12,7 +12,6 @@ import os
 import sys
 from pathlib import Path
 from threading import Thread
-import ipdb 
 
 import numpy as np
 import torch
@@ -31,12 +30,10 @@ from utils.datasets import create_dataloader
 from utils.general import (LOGGER, NCOLS, box_iou, check_dataset, check_img_size, check_requirements, check_yaml,
                            coco80_to_coco91_class, colorstr, increment_path, non_max_suppression, print_args,
                            scale_coords, xywh2xyxy, xyxy2xywh)
-from utils.metrics import ConfusionMatrix, ap_per_class
+# from utils.metrics import ConfusionMatrix, ap_per_class
+from utils.metrics import iou_score, box_iou_score, dice_score
 from utils.plots import output_to_target, plot_images, plot_val_study
 from utils.torch_utils import select_device, time_sync
-
-from utils.datasets import LoadImagesAndLabels
-from utils.plots import plot_images
 
 def save_one_txt(predn, save_conf, shape, file):
     # Save one txt result
@@ -83,11 +80,7 @@ def process_batch(detections, labels, iouv):
         correct[matches[:, 1].long()] = matches[:, 2:3] >= iouv
     return correct
 
-CROP_IMAGE_X = [293, 803]
-CROP_IMAGE_Y = [134, 637]
-
-def crop_image(img):
-    return img[CROP_IMAGE_Y[0]:CROP_IMAGE_Y[1],CROP_IMAGE_X[0]:CROP_IMAGE_X[1]]   
+# ---------------------- ELLIPSE FITTING ----------------------
 
 def binary_search(thresh, labels):
 
@@ -97,35 +90,35 @@ def binary_search(thresh, labels):
     dy = [-1, 0, 1]
     threshold = 1
 
-    for label in labels:
-        [x1, y1, x2, y2, _, _] = label
-        center = [int((x2+x1)/2), int((y2+y1)/2)]
-        # print('label', label)
-        i, j = 0, 0
-        while i < len(dx) and j < len(dy):
-            if dx[i] == 0 and dy[j] == 0:
-                i += 1
-                continue
-            elif dy[j] != 0: 
-                min = 0
-                max = int((y2-y1)/2)
-            elif dx[i] != 0: 
-                min = 0
-                max = int((x2-x1)/2)
-            else:
-                min = 0
-                max = int(np.sqrt(((y2-y1)/2)**2 + ((x2-x1)/2)**2))
+    # for label in labels:
+    [x1, y1, x2, y2] = labels
+    center = [int((x2+x1)/2), int((y2+y1)/2)]
+    i, j = 0, 0
+    while i < len(dx) and j < len(dy):
+        if dx[i] == 0 and dy[j] == 0:
+            i += 1
+            continue
+        elif dy[j] != 0:
+            min = 0
+            max = int((y2-y1)/2)
+        elif dx[i] != 0:
+            min = 0
+            max = int((x2-x1)/2)
+        else:
+            min = 0
+            max = int(np.sqrt(((y2-y1)/2)**2 + ((x2-x1)/2)**2))
 
-            found = False
-            count = 0
+        found = False
+        count = 0
 
-            while not found:
-                step = int((max+min)/2)
-                _x = center[0] + step*dx[i]
-                _y = center[1] + step*dy[j]
-                pdx, ndx = _x + threshold*dx[i], _x - threshold*dx[i]
-                pdy, ndy = _y + threshold*dy[j], _y - threshold*dy[j]
+        while not found:
+            step = int((max+min)/2)
+            _x = center[0] + step*dx[i]
+            _y = center[1] + step*dy[j]
+            pdx, ndx = _x + threshold*dx[i], _x - threshold*dx[i]
+            pdy, ndy = _y + threshold*dy[j], _y - threshold*dy[j]
 
+            if 0 <= _x < 256 and 0 <= _y < 256 and 0 <= pdx < 256 and 0 <= pdy < 256 and 0 <= ndx < 256 and 0 <= ndy < 256:
                 if count<2:
                     if thresh[_y, _x] == 0 and thresh[pdy, pdx] == 0 and thresh[ndy, ndx] == 0:
                         min = step
@@ -136,18 +129,16 @@ def binary_search(thresh, labels):
                         count += 1
                         continue
 
-                found = True
-                # print('FOUND. count', count)
-                x.append(_x)
-                y.append(_y)
-                count += 1
+            found = True
+            x.append(_x)
+            y.append(_y)
+            count += 1
 
-            i += 1
-            if i == len(dx):
-                i = 0
-                j += 1
+        i += 1
+        if i == len(dx):
+            i = 0
+            j += 1
 
-    # print('out of main loop')
     return x, y
 
 def fit_ellipse(xx, yy):
@@ -182,7 +173,7 @@ def fit_ellipse(xx, yy):
     RS=R2/s1
     (el,ec)=eig(RS)
 
-    recip=1.0/np.abs(el)
+    recip=1.0/(np.abs(el)+1e-10) # add a small number to avoid divide by zero
     axes=np.sqrt(recip)
 
     rads=np.arctan2(ec[1,0],ec[0,0])
@@ -190,6 +181,8 @@ def fit_ellipse(xx, yy):
     inve=pinv(ec)
 
     return [cc[0], cc[1], axes[0], axes[1], deg, inve]
+
+# ---------------------- ELLIPSE FITTING ----------------------
 
 @torch.no_grad()
 def run(data,
@@ -274,71 +267,166 @@ def run(data,
     import os
     import cv2
     import copy
+    from natsort import natsorted
 
-    test_dir = '/home/tejasr/projects/tracir_segmentation/yolov3/dataset/test'
-    num_test_img = 1
-    images = os.listdir(test_dir+'/images')
+    data_dir = '/home/tejasr/projects/tracir_segmentation/yolov3/dataset/'
+    pigs = ['Pig_A', 'Pig_B', 'Pig_C', 'Pig_D']
 
-    for i in range(num_test_img):
-        # img_path = os.path.join(test_dir, 'images', images[i])
-        # img = cv2.imread(img_path)
-        img = cv2.imread('/home/tejasr/projects/tracir_segmentation/yolov3/dataset/test/images/pig_7_251.png')
-        result = np.zeros_like(img)
-        im = torch.Tensor(img).to(device)
-        im = im.permute(2, 0, 1)
-        im = torch.unsqueeze(im, dim=0)
+    for pig in pigs:
+        save_dir1 = os.path.join(save_dir, pig)
+        if os.path.exists(save_dir1) == 0: os.mkdir(save_dir1)
 
-        dt = [0.0, 0.0, 0.0]
-        t1 = time_sync()
-        if pt:
-            im = im.to(device, non_blocking=True)
-            # targets = targets.to(device)
-        im = im.half() if half else im.float()  # uint8 to fp16/32
-        im /= 255  # 0 - 255 to 0.0 - 1.0
-        nb, _, height, width = im.shape  # batch size, channels, height, width
-        t2 = time_sync()
-        dt[0] += t2 - t1
+        test_dir = os.path.join(data_dir, pig)
+        images = os.listdir(test_dir+'/images')
 
-        # Inference
-        out, train_out = model(im) if training else model(im, augment=augment, val=True)  # inference, loss outputs
-        dt[1] += time_sync() - t2
+        total_iou = 0.0
+        total_box_iou = 0.0
+        count = 0
+        print(pig)
 
-        # NMS
-        t3 = time_sync()
-        out = non_max_suppression(out, conf_thres, iou_thres, labels=0, multi_label=False, agnostic=single_cls)
-        dt[2] += time_sync() - t3
+        for i in natsorted(images):
+            img_path = os.path.join(test_dir, 'images', i)
+            img = cv2.imread(img_path)
+            result_ell = np.zeros_like(img)
+            result_rect = np.zeros_like(img)
+            gt_rect = np.zeros_like(img)
+            result_rect_score = np.zeros_like(img)
+            gt_rect_score = np.zeros_like(img)
+            im = torch.Tensor(img).to(device)
+            im = im.permute(2, 0, 1)
+            im = torch.unsqueeze(im, dim=0)
 
-        # Plot images
-        # directly call below function 
-        # fname = os.path.join(save_dir, 'val_batch{}_pred.jpg'.format(i))
-        # fname = os.path.join(save_dir, images[i])
-        fname = os.path.join(save_dir, 'pig_7_251.png')
-        plot_images(im, output_to_target(out), paths=None, fname=fname, names=None, max_size=1920, max_subplots=16)
-        print('i', i)
-        print('image', images[i])
+            dt = [0.0, 0.0, 0.0]
+            t1 = time_sync()
+            if pt:
+                im = im.to(device, non_blocking=True)
+            im = im.half() if half else im.float()  # uint8 to fp16/32
+            im /= 255  # 0 - 255 to 0.0 - 1.0
+            nb, _, height, width = im.shape  # batch size, channels, height, width
+            t2 = time_sync()
+            dt[0] += t2 - t1
 
-        gray_image = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        thresh = (((gray_image/255)**1.5)*255).astype(np.uint8)
-        ret, thresh = cv2.threshold(thresh, 30, 150, cv2.THRESH_BINARY)
-        labels = out[0].cpu().numpy().astype('int')
-        x, y = binary_search(thresh, labels)
-        ipdb.set_trace()
-        for j in range(int(len(x)/8)):
-            xx = np.array(x[j*8:(j+1)*8])
-            yy = np.array(y[j*8:(j+1)*8])
-            # ipdb.set_trace()
-            [cx, cy, a, b, deg, _] = fit_ellipse(xx, yy)
-            # result = cv2.ellipse(result, (int(cx), int(cy)), (int(a), int(b)), int(deg), 0, 360, color=(255, 0, 0), thickness=1)
-            result = cv2.ellipse(result, (int(cx), int(cy)), (int(a), int(b)), int(deg), 0, 360, color=(255, 0, 0), thickness=-1)
-        # fname2 = os.path.join(save_dir, 'ellipse_'+images[i])
-        fname2 = os.path.join(save_dir, 'mask_'+'pig_7_251.png')
-        print('ellipse')
-        cv2.imwrite(fname2, result)
+            # Inference
+            out, train_out = model(im) if training else model(im, augment=augment, val=True)  # inference, loss outputs
+            dt[1] += time_sync() - t2
 
-        # Plots
-        if plots:
-            # confusion_matrix.plot(save_dir=save_dir, names=list(names.values()))
-            callbacks.run('on_val_end')
+            # NMS
+            t3 = time_sync()
+            out = non_max_suppression(out, conf_thres, iou_thres, labels=[], multi_label=False, agnostic=single_cls)
+            dt[2] += time_sync() - t3
+
+            fname = os.path.join(save_dir1, 'image_'+i)
+            targets = output_to_target(out)
+            if np.size(targets) == 0: continue
+            classes, boxes, confs = plot_images(im, targets, paths=None, fname=fname, names=None, max_size=1920, max_subplots=16, single_class=single_cls)
+
+            iou = 0.0
+            box_iou = 0.0
+            dice = 0.0
+            labels = [[], [], []]
+            gt_labels = [[], [], []]
+            bboxes_out = out[0].cpu().numpy()
+
+            label_path = os.path.join(test_dir, 'labels_bb', i.split('.')[0]+'.txt')
+            with open(label_path, 'r') as l:
+                    while True:
+                        line = l.readline()
+                        if not line: break
+                        [c, cw, ch, lw, lh, _] = line.split(' ')
+                        (h, w, _) = img.shape
+                        y1 = int(float(ch)*h - float(lh)*h/2)
+                        y2 = int(float(ch)*h + float(lh)*h/2)
+                        x1 = int(float(cw)*w - float(lw)*w/2)
+                        x2 = int(float(cw)*w + float(lw)*w/2)
+                        gt_labels[int(c)+1].append([x1, y1, x2, y2])
+                        if single_cls:
+                            gt_rect = cv2.rectangle(gt_rect, (x1, y1), (x2, y2), (255, 0, 0), 1)
+                            gt_rect_score = cv2.rectangle(gt_rect, (x1, y1), (x2, y2), (255, 0, 0), -1)
+                        else:
+                            if int(c)+1 == 1:
+                                gt_rect = cv2.rectangle(gt_rect, (x1, y1), (x2, y2), (0, 255, 0), 1)
+                                gt_rect_score = cv2.rectangle(gt_rect, (x1, y1), (x2, y2), (0, 255, 0), -1)
+                            elif int(c)+1 == 2:
+                                gt_rect = cv2.rectangle(gt_rect, (x1, y1), (x2, y2), (0, 0, 255), 1)
+                                gt_rect_score = cv2.rectangle(gt_rect, (x1, y1), (x2, y2), (0, 0, 255), -1)
+
+            gray_image = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            thresh = (((gray_image/255)**1.5)*255).astype(np.uint8)
+            _, thresh = cv2.threshold(thresh, 30, 150, cv2.THRESH_BINARY)
+
+            for cls, box, conf in zip(classes, boxes, confs):
+                if conf > 0.25:
+                    [x1, y1, x2, y2] = box
+                    if single_cls:
+                        result_rect = cv2.rectangle(result_rect, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 1)
+                        result_rect_score = cv2.rectangle(result_rect, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), -1)
+                    else:
+                        if cls == 0:
+                            result_rect = cv2.rectangle(result_rect, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 1)
+                            result_rect_score = cv2.rectangle(result_rect, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), -1)
+                        elif cls == 1:
+                            result_rect = cv2.rectangle(result_rect, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), 1)
+                            result_rect_score = cv2.rectangle(result_rect, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), -1)
+
+            box_iou = iou_score(result_rect_score, gt_rect_score, single_cls)
+            total_box_iou += box_iou
+
+            for cls, box, conf in zip(classes, boxes, confs):
+                if conf > 0.25:
+                    if single_cls: color = [255, 0, 0]
+                    else:
+                        color = [0, 0, 0]
+                        color[cls+1] = 255
+                    [x1, y1, x2, y2] = box
+                    label = [int(x1), int(y1), int(x2), int(y2)]
+                    x, y = binary_search(thresh, label)
+                    for j in range(int(len(x)/8)):
+                        xx = np.array(x[j*8:(j+1)*8])
+                        yy = np.array(y[j*8:(j+1)*8])
+                        [cx, cy, a, b, deg, _] = fit_ellipse(xx, yy)
+                        result_ell = cv2.ellipse(result_ell, (int(cx), int(cy)), (int(a), int(b)), int(deg), 0, 360, color=tuple(color), thickness=-1)
+
+            ellipse_path = os.path.join(test_dir, 'labels_masks_ellipse', i)
+            gt_ell = cv2.imread(ellipse_path)
+            mask_path = os.path.join(test_dir, 'labels_masks', i)
+            gt_mask = cv2.imread(mask_path)
+            gt_mask = np.transpose(gt_mask, (2, 0, 1))
+            result_ell1 = np.transpose(result_ell, (2, 0, 1))
+
+            # Evaluation
+            iou = iou_score(result_ell1, gt_mask, single_cls)
+            total_iou += iou
+
+            fname_masks_ell = os.path.join(save_dir1, 'ell_mask_'+i)
+            fname_masks_rect = os.path.join(save_dir1, 'rect_mask_'+i)
+            fname_ell = os.path.join(save_dir1, 'ell_'+i)
+            fname_rect = os.path.join(save_dir1, 'rect_'+i)
+
+            result_ell_over = (0.65 * img + 0.35 * result_ell).astype(int)
+            gt_ell_over = (0.65 * img + 0.35 * gt_ell).astype(int)
+            result_rect_over = (0.65 * img + 0.35 * result_rect).astype(int)
+            gt_rect_over = (0.65 * img + 0.35 * gt_rect).astype(int)
+
+            masks_ell = np.concatenate([img, gt_ell, result_ell], axis=1)
+            masks_rect = np.concatenate([img, gt_rect, result_rect], axis=1)
+            final_ell = np.concatenate([img, gt_ell_over, result_ell_over], axis=1)
+            final_rect = np.concatenate([img, gt_rect_over, result_rect_over], axis=1)
+
+            cv2.imwrite(fname_masks_ell, masks_ell)
+            cv2.imwrite(fname_masks_rect, masks_rect)
+            cv2.imwrite(fname_ell, final_ell)
+            cv2.imwrite(fname_rect, final_rect)
+            count += 1
+
+            # Plots
+            if plots:
+                # confusion_matrix.plot(save_dir=save_dir, names=list(names.values()))
+                callbacks.run('on_val_end')
+
+        print('Total iou', total_iou)
+        print('Avg iou', total_iou/count)
+        print('Total box_iou', total_box_iou)
+        print('Avg box_iou', total_box_iou/count)
 
 
 
@@ -349,9 +437,9 @@ def parse_opt():
     parser.add_argument('--weights', nargs='+', type=str, default=ROOT / 'yolov3.pt', help='model.pt path(s)')
     parser.add_argument('--batch-size', type=int, default=32, help='batch size')
     parser.add_argument('--imgsz', '--img', '--img-size', type=int, default=640, help='inference size (pixels)')
-    parser.add_argument('--conf-thres', type=float, default=0.25, help='confidence threshold') # 0.001
-    parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold') # 0.6
-    parser.add_argument('--task', default='val', help='train, val, test, speed or study')
+    parser.add_argument('--conf-thres', type=float, default=0.005, help='confidence threshold')
+    parser.add_argument('--iou-thres', type=float, default=0.6, help='NMS IoU threshold')
+    parser.add_argument('--task', default='test', help='train, val, test, speed or study')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--single-cls', action='store_true', help='treat as single-class dataset')
     parser.add_argument('--augment', action='store_true', help='augmented inference')

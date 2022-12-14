@@ -6,6 +6,7 @@ import cv2
 import ipdb
 import os
 import distutils
+import copy
 
 from natsort import natsorted
 
@@ -228,20 +229,20 @@ def read_images_masks_save_boxes(CVAT_folder, list_CVAT_folders, save_folder):
 
             cnt += 1
 
-def read_images_masks_save_boxes():
-    PIG_TRAIN = '/home/tejasr/projects/tracir_segmentation/data/pig_dataset_fukuda/train/'
-    PIG_VALID = '/home/tejasr/projects/tracir_segmentation/data/pig_dataset_fukuda/valid/'
-    PIG_TEST = '/home/tejasr/projects/tracir_segmentation/data/pig_dataset_fukuda/test/'
-    YOLO_TRAIN = '/home/tejasr/projects/tracir_segmentation/data/yolo_dataset/train/'
-    YOLO_VALID = '/home/tejasr/projects/tracir_segmentation/data/yolo_dataset/valid/'
-    YOLO_TEST = '/home/tejasr/projects/tracir_segmentation/data/yolo_dataset/test/'
+def images2bboxes():
+    PIG_TRAIN = '/home/tejasr/projects/tracir_segmentation/data/pig_dataset_fukuda3/train/'
+    PIG_VALID = '/home/tejasr/projects/tracir_segmentation/data/pig_dataset_fukuda3/valid/'
+    PIG_TEST = '/home/tejasr/projects/tracir_segmentation/data/pig_dataset_fukuda3/test/'
+    YOLO_TRAIN = '/home/tejasr/projects/tracir_segmentation/yolov3/dataset/yolo_dataset3/train/'
+    YOLO_VALID = '/home/tejasr/projects/tracir_segmentation/yolov3/dataset/yolo_dataset3/valid/'
+    YOLO_TEST = '/home/tejasr/projects/tracir_segmentation/yolov3/dataset/yolo_dataset3/test/'
     PIG_SET = [PIG_TRAIN, PIG_VALID, PIG_TEST]
     YOLO_SET = [YOLO_TRAIN, YOLO_VALID, YOLO_TEST]
 
     for src, dst in zip(PIG_SET, YOLO_SET):
         distutils.dir_util.copy_tree(src+'images/', dst+'images/')
         labels = natsorted(os.listdir(src+'labels/'))
-        for i, name in enumerate(labels):
+        for name in labels:
             image_path = src+'images/'+name
             image = cv2.imread(image_path)
             label_path = src+'labels/'+name
@@ -264,9 +265,55 @@ def read_images_masks_save_boxes():
                     box_centre = box_[0] + box_size/2
                     f.write('{} {:4f} {:4f} {:4f} {:4f} \n'.format(0, box_centre[0]/W, box_centre[1]/H, box_size[0]/W, box_size[1]/H))
 
+def images2bboxes_multiclass():
+    PIG_TRAIN = '/home/tejasr/projects/tracir_segmentation/data/pig_dataset_fukuda3/train/'
+    PIG_VALID = '/home/tejasr/projects/tracir_segmentation/data/pig_dataset_fukuda3/valid/'
+    PIG_TEST = '/home/tejasr/projects/tracir_segmentation/data/pig_dataset_fukuda3/test/'
+    YOLO_TRAIN = '/home/tejasr/projects/tracir_segmentation/yolov3/dataset/yolo_dataset_multiclass3/train/'
+    YOLO_VALID = '/home/tejasr/projects/tracir_segmentation/yolov3/dataset/yolo_dataset_multiclass3/valid/'
+    YOLO_TEST = '/home/tejasr/projects/tracir_segmentation/yolov3/dataset/yolo_dataset_multiclass3/test/'
+    PIG_SET = [PIG_TRAIN, PIG_VALID, PIG_TEST]
+    YOLO_SET = [YOLO_TRAIN, YOLO_VALID, YOLO_TEST]
+
+    import time
+    start = time.time()
+    for src, dst in zip(PIG_SET, YOLO_SET):
+        distutils.dir_util.copy_tree(src+'images/', dst+'images/')
+        labels = natsorted(os.listdir(src+'labels/'))
+        for name in labels:
+            image_path = src+'images/'+name
+            image = cv2.imread(image_path)
+            image_bb = copy.deepcopy(image)
+            label_path = src+'labels/'+name
+            label = cv2.imread(label_path)
+            label = np.transpose(label, (2, 0, 1))
+            for c in range(label.shape[0]):
+                channel = label[c, ...]
+                contour_points, _ = cv2.findContours(channel, 1, 2)
+                boxes = []
+                color = [0, 0, 0]
+                color[c] = 255
+                size_ = np.shape(image_bb)
+                H, W = size_[1], size_[0]
+                for contours in contour_points:
+                    max_pt = np.max(contours[:,0,:], axis=0)
+                    min_pt = np.min(contours[:,0,:], axis=0)
+                    box_ = [min_pt, max_pt]
+                    image_bb = cv2.rectangle(image_bb, (min_pt[0], min_pt[1]), (max_pt[0], max_pt[1]), tuple(color), 1)
+                    boxes.append(box_)
+                cv2.imwrite(os.path.join(dst+'images_bb', name.split('.')[0]+'.png'), image_bb)
+                label_path = os.path.join(dst+'labels', name.split('.')[0]+'.txt')
+                with open(label_path, 'a') as f:
+                    for box_ in boxes:
+                        box_size = box_[1] - box_[0]
+                        box_centre = box_[0] + box_size/2
+                        f.write('{} {:4f} {:4f} {:4f} {:4f} \n'.format(c-1, box_centre[0]/W, box_centre[1]/H, box_size[0]/W, box_size[1]/H))
+    print('time taken', time.time()-start)
+
 if __name__ == "__main__":
 
-    read_images_masks_save_boxes()
+    images2bboxes()
+    images2bboxes_multiclass()
 
     # # replace below with your video_name and annotation file name
     # video_name = '2022-05-19--20-30-34-pig_lab-Trial-5.mp4'
@@ -281,4 +328,3 @@ if __name__ == "__main__":
     # # we'll need to adjust the crop as well 
 
     # # create bounding boxes using the .txt files to verify 
-    

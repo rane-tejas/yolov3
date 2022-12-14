@@ -1,0 +1,30 @@
+# YOLOv3 🚀 by Ultralytics, GPL-3.0 license
+# COCO128 dataset https://www.kaggle.com/ultralytics/coco128 (first 128 images from COCO train2017)
+# Example usage: python train.py --data coco128.yaml
+# parent
+# ├── yolov3
+# └── datasets
+#     └── coco128  ← downloads here
+
+
+# Train/val/test sets as 1) dir: path/to/imgs, 2) file: path/to/imgs.txt, or 3) list: [path/to/imgs1, path/to/imgs2, ..]
+# path: dataset  # dataset root dir
+path: dataset/mixed_pig_fukuda_dataset1  # dataset root dir
+train: train/images  # train images (relative to 'path') 128 images
+val: valid/images  # val images (relative to 'path') 128 images
+test: test/images # test images (optional)
+# train: /home/tejasr/projects/tracir_segmentation/data/yolo_dataset/train/images/  # train images (relative to 'path') 128 images
+# val: /home/tejasr/projects/tracir_segmentation/data/yolo_dataset/valid/images  # val images (relative to 'path') 128 images
+# test: /home/tejasr/projects/tracir_segmentation/data/yolo_dataset/test/images # test images (optional)
+
+# Classes
+nc: 1  # number of classes
+names: ['vessel']
+
+# COMMANDS TO TRAIN WITH PRE-TRAINED WEIGHTS ##########################
+# CUDA_VISIBLE_DEVICES=2 python3 train.py --img 480 --batch 16 --epochs 5 --data vessel.yaml --weights yolov3-tiny.pt
+
+# COMMANDS TO TRAIN W/0 PRE-TRAINED WEIGHTS ##########################
+# CUDA_VISIBLE_DEVICES=2 python3 train.py --img 480 --batch 16 --epochs 5 --data vessel.yaml --weights '' --cfg yolov3-tiny.yaml
+
+## dataset folder is located outside YOLOv3 repo!! #######################
